@@ -1,118 +1,147 @@
+# Create a VPC
 module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "3.0.0"
+  source = "terraform-aws-modules/vpc/aws"
 
   name = "my-vpc"
-  cidr = var.vpc_cidr_block
+  cidr = "10.0.0.0/16"
 
-  azs             = ["eu-west-2a", "eu-west-2b"]
-  public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
-  private_subnets = ["10.0.3.0/24", "10.0.4.0/24"]
+  azs             = ["eu-west-2a", "eu-west-2b", "eu-west-2c"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
 
   enable_nat_gateway = true
   single_nat_gateway = true
+}
 
-  tags = {
-    Terraform   = "true"
-    Environment = "dev"
+# Security Groups
+resource "aws_security_group" "alb_sg" {
+  vpc_id = module.vpc.vpc_id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-module "security_group" {
-  source  = "terraform-aws-modules/security-group/aws"
-  version = "4.0.0"
+resource "aws_security_group" "ec2_sg" {
+  vpc_id = module.vpc.vpc_id
 
-  name        = "allow-ssh-http"
-  description = "Security group with HTTP and SSH"
-  vpc_id      = module.vpc.vpc_id
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
-  ingress_with_cidr_blocks = [
-    {
-      from_port   = 22
-      to_port     = 22
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-    },
-    {
-      from_port   = 80
-      to_port     = 80
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-    },
-    {
-      from_port   = 443
-      to_port     = 443
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-    },
-  ]
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-module "ec2" {
-  source  = "terraform-aws-modules/ec2-instance/aws"
-  version = "2.0.0"
+resource "aws_security_group" "rds_sg" {
+  vpc_id = module.vpc.vpc_id
 
-  name           = "web-server"
-  instance_count = 1
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ec2_sg.id]
+  }
 
-  ami                    = var.ec2_ami
-  instance_type          = var.ec2_instance_type
-  vpc_security_group_ids = [module.security_group.this_security_group_id]
-  subnet_id              = element(module.vpc.public_subnets, 0)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ALB
+module "alb" {
+  source = "terraform-aws-modules/alb/aws"
+
+  name               = "my-alb"
+  load_balancer_type = "application"
+
+  subnets         = module.vpc.public_subnets
+  security_groups = [aws_security_group.alb_sg.id]
+
+  target_groups = [
+    {
+      name_prefix      = "my-tg"
+      backend_protocol = "HTTP"
+      backend_port     = 80
+      target_type      = "instance"
+    }
+  ]
+
+  # listener = [
+  #   {
+  #     port     = 80
+  #     protocol = "HTTP"
+  #     default_action = {
+  #       type             = "forward"
+  #       target_group_arn = module.alb.target_group_arns[0]
+  #     }
+  #   }
+  # ]
+}
+
+# EC2 Instance
+resource "aws_instance" "web" {
+  ami             = "ami-05d929ac8893c382f"
+  instance_type   = "t2.micro"
+  subnet_id       = module.vpc.public_subnets[0]
+  security_groups = [aws_security_group.ec2_sg.id]
+  key_name        = "your-key-name"
 
   user_data = file("user_data.sh")
 
   tags = {
-    Name = "web-server"
+    Name = "WebServer"
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
-module "alb" {
-  source  = "terraform-aws-modules/alb/aws"
-  version = "6.0.0"
-
-  name               = "app-lb"
-  load_balancer_type = "application"
-  vpc_id             = module.vpc.vpc_id
-  subnets            = module.vpc.public_subnets
-  security_groups    = [module.security_group.this_security_group_id]
-
-  http_tcp_listeners = [
-    {
-      port              = 80
-      protocol          = "HTTP"
-      target_group_name = "app-tg"
-      target_type       = "instance"
-      target_port       = 80
-    }
-  ]
-
-  tags = {
-    Terraform   = "true"
-    Environment = "dev"
-  }
-}
-
+# RDS
 module "rds" {
-  source  = "terraform-aws-modules/rds/aws"
-  version = "5.0.0"
+  source = "terraform-aws-modules/rds/aws"
 
-  identifier     = "recognition-db"
-  engine         = var.rds_engine
-  engine_version = var.rds_engine_version
-  instance_class = var.rds_instance_class
+  identifier     = "my-rds"
+  engine         = "postgres"
+  engine_version = "12.5"
 
-  allocated_storage      = var.rds_allocated_storage
-  storage_encrypted      = true
-  username               = var.rds_username
-  password               = var.rds_password
-  db_name                = var.rds_db_name
-  publicly_accessible    = true
-  vpc_security_group_ids = [module.security_group.this_security_group_id]
+  instance_class    = "db.t2.micro"
+  allocated_storage = 20
+  db_name           = "mydatabase"
+  username          = "admin"
+  password          = "yourpassword"
+
   subnet_ids             = module.vpc.private_subnets
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
 
-  tags = {
-    Terraform   = "true"
-    Environment = "dev"
-  }
+  backup_retention_period = 7
+  publicly_accessible     = false
 }
