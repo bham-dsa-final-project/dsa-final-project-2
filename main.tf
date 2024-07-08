@@ -116,11 +116,3 @@ module "rds" {
     Environment = "dev"
   }
 }
-
-output "alb_dns_name" {
-  value = module.alb.this_alb_dns_name
-}
-
-output "rds_endpoint" {
-  value = module.rds.this_db_instance_address
-}

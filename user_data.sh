@@ -8,7 +8,7 @@ yum install -y git python3
 pip3 install pymysql
 
 # Clone the GitHub repository
-git clone https://github.com/your-repo/your-project.git /home/ec2-user/your-project
+git clone https://github.com/bham-dsa-final-project/dsa-final-project-2 /home/ec2-user/your-project
 
 # Configure environment variables
 echo "export RDS_HOST='${rds_endpoint}'" >> /home/ec2-user/.bash_profile
